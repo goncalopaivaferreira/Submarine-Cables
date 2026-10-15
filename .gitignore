@@ -1,0 +1,6 @@
+.venv/
+.qa_deps/
+__pycache__/
+*.pyc
+output/
+.streamlit/

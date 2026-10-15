@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/arc/arc-episode-bundle-v1.schema.json",
+  "title": "ARC episode bundle v1",
+  "type": "object",
+  "required": ["schema_version", "generator", "episode"],
+  "properties": {
+    "schema_version": {"const": "arc-episode-bundle-v1"},
+    "generator": {
+      "type": "object",
+      "required": ["name", "version", "created_at_utc", "source_revision"]
+    },
+    "episode": {
+      "type": "object",
+      "required": ["id", "scenario", "policy", "map", "timeline", "metrics", "disclosure"],
+      "properties": {
+        "id": {"type": "string"},
+        "scenario": {
+          "type": "object",
+          "required": ["id", "category", "bank_id", "split", "world_seed", "horizon_h", "time_step_h"]
+        },
+        "policy": {
+          "type": "object",
+          "required": ["id", "label", "kind", "execution_information", "checkpoint_id"]
+        },
+        "map": {"type": "object"},
+        "timeline": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["step", "time_h", "reward", "cumulative_reward", "reward_components", "vessels", "incidents", "decisions", "events"]
+          }
+        },
+        "metrics": {"type": "object"},
+        "disclosure": {"type": "object"}
+      }
+    }
+  }
+}
+
