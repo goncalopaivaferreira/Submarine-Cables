@@ -244,16 +244,8 @@ def build_fast_map_and_tables(
     isolar_entidades: bool = False,
     mostrar_linhas: bool = True,
     mostrar_rastos: bool = False,
-    usar_gpu_trips: bool = False,
-    df_trips_cached: pd.DataFrame | None = None,
     map_height: int = 500,
 ):
-    """
-    Constrói o PyDeck de forma ultra-rápida:
-    - Infraestrutura via GeoJsonLayer em Cache (Nível 2)
-    - Incidentes e Navios convertidos diretamente em DataFrames (Nível 3)
-    - Trajetória = Linha contínua | Rasto = Tracejado (ou TripsLayer na GPU)
-    """
     safe_idx = min(step_idx, len(timeline) - 1)
     frame = timeline[safe_idx]
     ep_id = episode["id"]
@@ -267,7 +259,7 @@ def build_fast_map_and_tables(
 
     layers_list = []
 
-    # 1. CAMADA ESTÁTICA DE INFRAESTRUTURA (GeoJsonLayer em Cache - Nível 2)
+    # 1. CAMADA ESTÁTICA DE INFRAESTRUTURA (GeoJsonLayer)
     geojson_infra, df_infra = get_static_infra_geojson(
         ep_id, episode.get("map", {}), faded=(navio_focado is not None and not isolar_entidades)
     )
@@ -289,7 +281,7 @@ def build_fast_map_and_tables(
             )
         )
 
-    # 2. DATAFRAME DIRETO DE INCIDENTES (Nível 3)
+    # 2. DATAFRAME DIRETO DE INCIDENTES
     inc_list = frame.get("incidents", [])
     if inc_list:
         df_inc_raw = pd.DataFrame(inc_list)
@@ -328,7 +320,7 @@ def build_fast_map_and_tables(
         df_inc_raw = pd.DataFrame()
         df_incidentes = pd.DataFrame(columns=["Incidente", "Estado", "Coords"])
 
-    # 3. DATAFRAME DIRETO DE NAVIOS (Nível 3)
+    # 3. DATAFRAME DIRETO DE NAVIOS
     ves_list = frame.get("vessels", [])
     if ves_list:
         df_ves_raw = pd.DataFrame(ves_list)
@@ -377,61 +369,39 @@ def build_fast_map_and_tables(
         df_ves_raw = pd.DataFrame()
         df_navios = pd.DataFrame(columns=["Navio", "Estado", "Tipo", "Coords"])
 
-    # 4. RASTO HISTÓRICO (TRACEJADO / DASHES OU GPU TRIPSLAYER)
+    # 4. RASTO HISTÓRICO (TRACEJADO / DASHES)
     if mostrar_rastos and safe_idx > 0:
-        if usar_gpu_trips and df_trips_cached is not None and not df_trips_cached.empty:
-            df_t_use = df_trips_cached
-            if navio_focado:
-                df_t_use = df_t_use[df_t_use["id"] == navio_focado]
-            if not df_t_use.empty:
-                layers_list.append(
-                    pdk.Layer(
-                        "TripsLayer",
-                        id=f"trips_gpu_{ep_id}",
-                        data=df_t_use,
-                        get_path="path",
-                        get_timestamps="timestamps",
-                        get_color="color",
-                        opacity=0.85,
-                        width_min_pixels=3,
-                        rounded=True,
-                        trail_length=60,
-                        current_time=float(frame["time_h"]),
-                        pickable=False,
-                    )
-                )
-        else:
-            trail_dash_rows = []
-            trails_data = {}
-            vessel_types = {v["id"]: v.get("type", "unknown") for v in frame["vessels"]}
-            for t in timeline[: safe_idx + 1]:
-                for v in t["vessels"]:
-                    if navio_focado and v["id"] != navio_focado:
-                        continue
-                    vid = v["id"]
-                    if vid not in trails_data:
-                        trails_data[vid] = []
-                    trails_data[vid].append([v["lon"], v["lat"]])
+        trail_dash_rows = []
+        trails_data = {}
+        vessel_types = {v["id"]: v.get("type", "unknown") for v in frame["vessels"]}
+        for t in timeline[: safe_idx + 1]:
+            for v in t["vessels"]:
+                if navio_focado and v["id"] != navio_focado:
+                    continue
+                vid = v["id"]
+                if vid not in trails_data:
+                    trails_data[vid] = []
+                trails_data[vid].append([v["lon"], v["lat"]])
 
-            for vid, coords in trails_data.items():
-                if len(coords) > 1:
-                    v_type = vessel_types.get(vid, "unknown")
-                    dash_color = [100, 195, 255, 175] if v_type == "patrol" else [255, 180, 80, 175]
-                    trail_dash_rows.extend(build_dashed_segments(coords, dash_color))
+        for vid, coords in trails_data.items():
+            if len(coords) > 1:
+                v_type = vessel_types.get(vid, "unknown")
+                dash_color = [100, 195, 255, 175] if v_type == "patrol" else [255, 180, 80, 175]
+                trail_dash_rows.extend(build_dashed_segments(coords, dash_color))
 
-            if trail_dash_rows:
-                df_trails = pd.DataFrame(trail_dash_rows)
-                layers_list.append(
-                    pdk.Layer(
-                        "LineLayer",
-                        data=df_trails,
-                        get_source_position="start",
-                        get_target_position="end",
-                        get_color="color",
-                        get_width=2.5,
-                        pickable=False,
-                    )
+        if trail_dash_rows:
+            df_trails = pd.DataFrame(trail_dash_rows)
+            layers_list.append(
+                pdk.Layer(
+                    "LineLayer",
+                    data=df_trails,
+                    get_source_position="start",
+                    get_target_position="end",
+                    get_color="color",
+                    get_width=2.5,
+                    pickable=False,
                 )
+            )
 
     # 5. TRAJETÓRIA PROJETADA: LINHA CONTÍNUA COMPLETA (SEM ANEL DE ALVO)
     if mostrar_linhas:
@@ -465,7 +435,7 @@ def build_fast_map_and_tables(
                 )
             )
 
-    # 6. CAMADAS VETORIZADAS DE INCIDENTES E NAVIOS (DataFrames Diretos - Nível 3)
+    # 6. CAMADAS VETORIZADAS GERAIS (Scatters)
     if not df_inc_raw.empty:
         layers_list.append(
             pdk.Layer(
@@ -547,61 +517,40 @@ st.set_page_config(page_title="ARC Episode Viewer", layout="wide")
 st.title("ARC Episode Viewer")
 st.caption("Plataforma Operacional e de Auditoria de Políticas de Reinforcement Learning (Cabos Submarinos).")
 
-st.markdown(
-    """
+st.markdown("""
     <style>
     .mapboxgl-ctrl-bottom-left, .mapboxgl-ctrl-bottom-right { display: none !important; }
     div[data-baseweb="select"] { height: auto !important; }
     div[data-baseweb="select"] * { white-space: normal !important; word-break: break-word !important; text-overflow: unset !important; }
-    div[data-baseweb="popover"] ul[role="listbox"] li, 
-    div[data-baseweb="popover"] ul[role="listbox"] li * { white-space: normal !important; word-break: break-word !important; text-overflow: unset !important; padding-top: 8px; padding-bottom: 8px; }
-
-    /* Botões grandes de Navegação Horizontal (VG | MF | CE) como no desenho */
-    div.st-key-nav_vg button,
-    div.st-key-nav_mf button,
-    div.st-key-nav_ce button {
-        width: 100% !important;
-        min-height: 62px !important;
-        border-radius: 32px !important;
-        border: 2px solid #4a5568 !important;
-        background-color: #161922 !important;
-        transition: all 0.2s ease !important;
-    }
-    div.st-key-nav_vg button p,
-    div.st-key-nav_mf button p,
-    div.st-key-nav_ce button p {
-        font-size: 1.3rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.3px !important;
-    }
-    div.st-key-nav_vg button[kind="primary"],
-    div.st-key-nav_mf button[kind="primary"],
-    div.st-key-nav_ce button[kind="primary"] {
-        border: 2.5px solid #ff4b4b !important;
-        background-color: #261b22 !important;
-        color: #ffffff !important;
-        box-shadow: 0 0 14px rgba(255, 75, 75, 0.28) !important;
-    }
-    div.st-key-nav_vg button:hover,
-    div.st-key-nav_mf button:hover,
-    div.st-key-nav_ce button:hover {
-        border-color: #ff4b4b !important;
-        transform: translateY(-1px);
-    }
-    .nav-divider {
+    
+    /* Tabs Minimalistas e Centradas */
+    div[data-baseweb="tab-list"] {
         display: flex;
-        align-items: center;
         justify-content: center;
-        height: 62px;
-        font-size: 2.2rem;
-        font-weight: 300;
-        color: #4a5568;
-        user-select: none;
+        border-bottom: 1px solid #333 !important;
+        padding-bottom: 0px !important;
+        gap: 0px !important;
     }
+    button[data-baseweb="tab"] {
+        flex: 1;
+        text-align: center;
+        font-size: 1.15rem !important;
+        font-weight: 400 !important;
+        color: #777 !important;
+        background-color: transparent !important;
+        border: none !important;
+        border-bottom: 2px solid transparent !important;
+        border-radius: 0 !important;
+        padding: 12px 0px !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #fff !important;
+        border-bottom: 2px solid #fff !important;
+        font-weight: 500 !important;
+    }
+    div[data-baseweb="tab-highlight"] { display: none !important; }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """, unsafe_allow_html=True)
 
 # --- CARREGAMENTO DE DADOS ---
 bundles: dict[str, dict] = {}
@@ -648,136 +597,71 @@ st.sidebar.caption(f"**Duração:** {timeline[-1]['time_h']:.1f}h | **Passos:** 
 st.sidebar.caption(f"**Seed:** {scenario['world_seed']} | **Split:** {scenario['split']}")
 st.sidebar.caption(f"**Banco:** {scenario['bank_id']}")
 
-# =====================================================================
-# 1. CABEÇALHO E MÉTRICAS GLOBAIS NO TOPO
-# =====================================================================
-st.subheader(f"Cenário: {scenario['id']} — Política: {policy['label']}", divider="gray")
+# --- ESTADO GLOBAL DA ANIMAÇÃO ---
+if "step_slider" not in st.session_state: st.session_state.step_slider = 0
+if "playing" not in st.session_state: st.session_state.playing = False
 
-columns = st.columns(6)
-columns[0].metric("Resolvidos", f"{int(metric(metrics, 'n_resolved'))}/{int(metric(metrics, 'n_incidents'))}")
-columns[1].metric("Taxa de resolução", f"{100 * float(metric(metrics, 'resolution_rate')):.1f}%")
-columns[2].metric("Primeira resposta", f"{float(metric(metrics, 'mean_first_response_time_h')):.1f} h")
-columns[3].metric("Tempo de resolução", f"{float(metric(metrics, 'mean_time_to_resolution_h')):.1f} h")
-columns[4].metric("Despachos duplicados", int(metric(metrics, "duplicate_dispatch_count")))
-columns[5].metric("Severidade por resolver", f"{float(metric(metrics, 'unresolved_severity')):.2f}")
-st.divider()
+if st.session_state.step_slider > max_frame: st.session_state.step_slider = max_frame
+if st.session_state.playing:
+    if st.session_state.step_slider < max_frame: st.session_state.step_slider += 1
+    else: st.session_state.playing = False
 
-# =====================================================================
-# 2. BARRA DE NAVEGAÇÃO HORIZONTAL LARGA (IGUAL AO DESENHO: VG | MF | CE)
-# =====================================================================
-if "active_tab" not in st.session_state:
-    st.session_state.active_tab = "VG"
+def click_play():
+    if st.session_state.step_slider >= max_frame: st.session_state.step_slider = 0
+    st.session_state.playing = not st.session_state.playing
 
+def click_reset():
+    st.session_state.step_slider = 0
+    st.session_state.playing = False
 
-def set_tab(tab_code: str):
-    st.session_state.active_tab = tab_code
+def update_slider(key):
+    st.session_state.step_slider = st.session_state[key]
 
+df_chart, df_step, df_gantt, _ = precompute_episode_series(episode["id"], timeline, vessel_ids)
 
-nav_c1, nav_div1, nav_c2, nav_div2, nav_c3 = st.columns([10, 0.6, 10, 0.6, 10])
-with nav_c1:
-    st.button(
-        "🌐 Visão Geral",
-        key="nav_vg",
-        type="primary" if st.session_state.active_tab == "VG" else "secondary",
-        on_click=set_tab,
-        args=("VG",),
-        width="stretch",
-    )
-with nav_div1:
-    st.markdown("<div class='nav-divider'>|</div>", unsafe_allow_html=True)
-with nav_c2:
-    st.button(
-        "🎯 Modo Foco",
-        key="nav_mf",
-        type="primary" if st.session_state.active_tab == "MF" else "secondary",
-        on_click=set_tab,
-        args=("MF",),
-        width="stretch",
-    )
-with nav_div2:
-    st.markdown("<div class='nav-divider'>|</div>", unsafe_allow_html=True)
-with nav_c3:
-    st.button(
-        "⚖️ Comparação de Episódios",
-        key="nav_ce",
-        type="primary" if st.session_state.active_tab == "CE" else "secondary",
-        on_click=set_tab,
-        args=("CE",),
-        width="stretch",
-    )
-
-st.divider()
-
-# Pré-cálculo em cache das séries temporais, Gantt e TripsLayer
-df_chart, df_step, df_gantt, df_trips = precompute_episode_series(episode["id"], timeline, vessel_ids)
-
-
-# =====================================================================
-# 3. FRAGMENTO ISOLADO DE REPRODUÇÃO (EVITA RECARREGAR PÁGINA INTEIRA!)
-# =====================================================================
 @st.fragment
 def render_interactive_workspace():
-    if "step_slider" not in st.session_state:
-        st.session_state.step_slider = 0
-    if "playing" not in st.session_state:
-        st.session_state.playing = False
-
-    if st.session_state.step_slider > max_frame:
-        st.session_state.step_slider = max_frame
-
-    if st.session_state.playing:
-        if st.session_state.step_slider < max_frame:
-            st.session_state.step_slider += 1
-        else:
-            st.session_state.playing = False
-
-    def click_play():
-        if st.session_state.step_slider >= max_frame:
-            st.session_state.step_slider = 0
-        st.session_state.playing = not st.session_state.playing
-
-    def click_reset():
-        st.session_state.step_slider = 0
-        st.session_state.playing = False
-
     frame = timeline[st.session_state.step_slider]
 
-    # Controlador Temporal Partilhado
-    ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1.3, 1.1, 2.2, 5.4])
-    with ctrl_col1:
-        st.button("⏸ Pausa" if st.session_state.playing else "▶ Reproduzir", on_click=click_play, width="stretch")
-    with ctrl_col2:
-        st.button("⏮ Reset", on_click=click_reset, width="stretch")
-    with ctrl_col3:
-        st.markdown(
-            f"<div style='padding-top: 8px; font-weight: 600;'>⏱️ Passo {frame['step']}/{max_frame} ({frame['time_h']:.1f}h)</div>",
-            unsafe_allow_html=True,
-        )
-    with ctrl_col4:
-        st.slider("Navegação Temporal", min_value=0, max_value=max_frame, key="step_slider", label_visibility="collapsed")
+    # 1. TABS NO TOPO ABSOLUTO (Isto resolve a duplicação)
+    tab_geral, tab_foco, tab_comp = st.tabs([
+        "   Visão Geral   ", 
+        "   Modo Foco   ", 
+        "   Comparação de Episódios   "
+    ])
+
+    # 2. FUNÇÃO AUXILIAR: Desenha o Cabeçalho e Slider abaixo da aba ativa
+    def render_header_and_controls(tab_id):
+        st.subheader(f"Cenário: {scenario['id']} — Política: {policy['label']}", divider="gray")
+        columns = st.columns(6)
+        columns[0].metric("Resolvidos", f"{int(metric(metrics, 'n_resolved'))}/{int(metric(metrics, 'n_incidents'))}")
+        columns[1].metric("Taxa de resolução", f"{100 * float(metric(metrics, 'resolution_rate')):.1f}%")
+        columns[2].metric("Primeira resposta", f"{float(metric(metrics, 'mean_first_response_time_h')):.1f} h")
+        columns[3].metric("Tempo de resolução", f"{float(metric(metrics, 'mean_time_to_resolution_h')):.1f} h")
+        columns[4].metric("Despachos duplicados", int(metric(metrics, "duplicate_dispatch_count")))
+        columns[5].metric("Severidade por resolver", f"{float(metric(metrics, 'unresolved_severity')):.2f}")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1.3, 1.1, 2.2, 5.4])
+        with ctrl_col1: st.button("⏸ Pausa" if st.session_state.playing else "▶ Reproduzir", on_click=click_play, width="stretch", key=f"play_{tab_id}")
+        with ctrl_col2: st.button("⏮ Reset", on_click=click_reset, width="stretch", key=f"reset_{tab_id}")
+        with ctrl_col3: st.markdown(f"<div style='padding-top: 8px; font-weight: 500;'>⏱️ Passo {frame['step']}/{max_frame} ({frame['time_h']:.1f}h)</div>", unsafe_allow_html=True)
+        with ctrl_col4: st.slider("Navegação Temporal", min_value=0, max_value=max_frame, value=st.session_state.step_slider, key=f"slider_{tab_id}", on_change=update_slider, args=(f"slider_{tab_id}",), label_visibility="collapsed")
+        st.divider()
 
     # -----------------------------------------------------------------
-    # ABA 1: VISÃO GERAL (VG) — Só executa quando selecionada!
+    # ABA 1: VISÃO GERAL
     # -----------------------------------------------------------------
-    if st.session_state.active_tab == "VG":
-        c_opt1, c_opt2, c_opt3, _ = st.columns([2.4, 2.4, 2.6, 2.6])
-        with c_opt1:
-            mostrar_linhas_glob = st.checkbox("Trajetórias projetadas (Linha)", value=True, key="chk_lin_glob")
-        with c_opt2:
-            mostrar_rastos_glob = st.checkbox("Rasto histórico (Tracejado)", value=False, key="chk_rst_glob")
-        with c_opt3:
-            usar_gpu_glob = st.checkbox("⚡ Rasto Fluido GPU (TripsLayer)", value=False, key="chk_gpu_glob")
+    with tab_geral:
+        render_header_and_controls("vg")
+        
+        c_opt1, c_opt2, _ = st.columns([1.5, 1.5, 7])
+        with c_opt1: mostrar_linhas_glob = st.checkbox("Trajetórias", value=True, key="chk_lin_glob")
+        with c_opt2: mostrar_rastos_glob = st.checkbox("Rastos", value=False, key="chk_rst_glob")
 
         deck_geral, df_navios, df_incidentes, df_infra, _ = build_fast_map_and_tables(
-            episode=episode,
-            timeline=timeline,
-            step_idx=st.session_state.step_slider,
-            navio_focado=None,
-            isolar_entidades=False,
-            mostrar_linhas=mostrar_linhas_glob,
-            mostrar_rastos=mostrar_rastos_glob or usar_gpu_glob,
-            usar_gpu_trips=usar_gpu_glob,
-            df_trips_cached=df_trips,
+            episode=episode, timeline=timeline, step_idx=st.session_state.step_slider,
+            mostrar_linhas=mostrar_linhas_glob, mostrar_rastos=mostrar_rastos_glob
         )
 
         left, right = st.columns([2, 1])
@@ -787,35 +671,21 @@ def render_interactive_workspace():
 
         with right:
             st.markdown("**Estado no instante atual**")
-            t_nav, t_inc, t_inf = st.tabs([
-                f"⛴️ Navios ({len(df_navios)})",
-                f"🚨 Incidentes ({len(df_incidentes)})",
-                f"🏢 Infra ({len(df_infra)})",
-            ])
-            with t_nav:
-                st.dataframe(df_navios, hide_index=True, width="stretch", height=400)
-            with t_inc:
-                st.dataframe(df_incidentes, hide_index=True, width="stretch", height=400)
-            with t_inf:
-                st.dataframe(df_infra, hide_index=True, width="stretch", height=400)
+            t_nav, t_inc, t_inf = st.tabs([f"Navios ({len(df_navios)})", f"Incidentes ({len(df_incidentes)})", f"Infra ({len(df_infra)})"])
+            with t_nav: st.dataframe(df_navios, hide_index=True, width="stretch", height=400)
+            with t_inc: st.dataframe(df_incidentes, hide_index=True, width="stretch", height=400)
+            with t_inf: st.dataframe(df_infra, hide_index=True, width="stretch", height=400)
 
         st.divider()
 
         chart_left, chart_right = st.columns(2)
         with chart_left:
-            st.altair_chart(
-                criar_grafico_com_regua(df_chart, ["open", "resolved"], "Incidentes ao longo do tempo", ["#ff2b2b", "#00dcdc"], frame["time_h"]),
-                width="stretch",
-            )
+            st.altair_chart(criar_grafico_com_regua(df_chart, ["open", "resolved"], "Incidentes ao longo do tempo", ["#ff2b2b", "#00dcdc"], frame["time_h"]), width="stretch")
         with chart_right:
-            st.altair_chart(
-                criar_grafico_com_regua(df_chart, ["cumulative_reward"], "Recompensa Acumulada", ["#0078ff"], frame["time_h"]),
-                width="stretch",
-            )
+            st.altair_chart(criar_grafico_com_regua(df_chart, ["cumulative_reward"], "Recompensa Acumulada", ["#0078ff"], frame["time_h"]), width="stretch")
 
         st.divider()
 
-        # Diagnóstico RL
         st.markdown("**Diagnóstico de Decisão do Agente**")
         val_age = abs(metric(metrics, "incident_age_penalty"))
         val_transit = abs(metric(metrics, "transit_penalty"))
@@ -832,45 +702,26 @@ def render_interactive_workspace():
         m3.metric("Penalidade: Trânsito", f"{metric(metrics, 'transit_penalty'):.2f}", pct_transit, delta_color="off")
         m4.metric("Penalidade: Adversarial", f"{metric(metrics, 'unassessed_adversarial_penalty'):.2f}", pct_adv, delta_color="off")
 
-        base_step = (
-            alt.Chart(df_step)
-            .mark_bar(color="#ff4b4b", size=2.5)
-            .encode(
-                x=alt.X("Tempo (h):Q", title="Tempo (h)"),
-                y=alt.Y("Recompensa no Passo:Q", title="Penalização Instantânea"),
-                tooltip=[alt.Tooltip("Tempo (h)"), alt.Tooltip("Recompensa no Passo", format=".4f")],
-            )
-            .properties(height=250, title="Sangramento de Pontos por Passo (Pulso)")
-        )
+        base_step = alt.Chart(df_step).mark_bar(color="#ff4b4b", size=2.5).encode(
+            x=alt.X("Tempo (h):Q", title="Tempo (h)"),
+            y=alt.Y("Recompensa no Passo:Q", title="Penalização Instantânea"),
+            tooltip=[alt.Tooltip("Tempo (h)"), alt.Tooltip("Recompensa no Passo", format=".4f")]
+        ).properties(height=250, title="Sangramento de Pontos por Passo")
+
         regua_step = alt.Chart(pd.DataFrame({"x": [frame["time_h"]]})).mark_rule(color="white", strokeWidth=2).encode(x="x:Q")
 
-        df_donut = pd.DataFrame({
-            "Componente": ["Idade do Incidente", "Trânsito", "Risco Adversarial"],
-            "Valor": [val_age, val_transit, val_adv],
-        })
+        df_donut = pd.DataFrame({"Componente": ["Idade do Incidente", "Trânsito", "Risco Adversarial"], "Valor": [val_age, val_transit, val_adv]})
         df_donut = df_donut[df_donut["Valor"] > 0]
 
-        donut_chart = (
-            alt.Chart(df_donut)
-            .mark_arc(innerRadius=50)
-            .encode(
-                theta=alt.Theta(field="Valor", type="quantitative"),
-                color=alt.Color(
-                    field="Componente",
-                    type="nominal",
-                    scale=alt.Scale(scheme="set2"),
-                    legend=alt.Legend(orient="bottom", title=""),
-                ),
-                tooltip=["Componente", alt.Tooltip("Valor", format=".2f")],
-            )
-            .properties(height=250, title="Peso Absoluto das Falhas")
-        )
+        donut_chart = alt.Chart(df_donut).mark_arc(innerRadius=50).encode(
+            theta=alt.Theta(field="Valor", type="quantitative"),
+            color=alt.Color(field="Componente", type="nominal", scale=alt.Scale(scheme="set2"), legend=alt.Legend(orient="bottom", title="")),
+            tooltip=["Componente", alt.Tooltip("Valor", format=".2f")]
+        ).properties(height=250, title="Peso Absoluto das Falhas")
 
         c1, c2 = st.columns([2.5, 1.5])
-        with c1:
-            st.altair_chart(base_step + regua_step, width="stretch")
-        with c2:
-            st.altair_chart(donut_chart, width="stretch")
+        with c1: st.altair_chart(base_step + regua_step, width="stretch")
+        with c2: st.altair_chart(donut_chart, width="stretch")
 
         st.divider()
 
@@ -880,87 +731,94 @@ def render_interactive_workspace():
             range_cores = ["#555555", "#0078ff", "#00dcdc", "#ff8c00", "#9b59b6"]
             altura_dinamica = max(150, len(vessel_ids) * 50 + 60)
 
-            gantt_base = (
-                alt.Chart(df_gantt)
-                .mark_bar(cornerRadius=4, size=24)
-                .encode(
-                    x=alt.X("Início:Q", title="Tempo (h)"),
-                    x2="Fim:Q",
-                    y=alt.Y("Navio:N", title="", sort=vessel_ids, axis=alt.Axis(grid=False, tickSize=0, domain=False, labelPadding=10, labelFontSize=12)),
-                    color=alt.Color("Estado:N", scale=alt.Scale(domain=domain_estados, range=range_cores), legend=alt.Legend(title="", orient="top", labelFontSize=12)),
-                    tooltip=[
-                        alt.Tooltip("Navio:N", title="Navio"),
-                        alt.Tooltip("Estado:N", title="Estado"),
-                        alt.Tooltip("Início:Q", title="Início (h)", format=".1f"),
-                        alt.Tooltip("Fim:Q", title="Fim (h)", format=".1f"),
-                        alt.Tooltip("Duração:N", title="Duração total"),
-                    ],
-                )
-                .properties(height=altura_dinamica)
-            )
+            gantt_base = alt.Chart(df_gantt).mark_bar(cornerRadius=4, size=24).encode(
+                x=alt.X("Início:Q", title="Tempo (h)"),
+                x2="Fim:Q",
+                y=alt.Y("Navio:N", title="", sort=vessel_ids, axis=alt.Axis(grid=False, tickSize=0, domain=False, labelPadding=10, labelFontSize=12)),
+                color=alt.Color("Estado:N", scale=alt.Scale(domain=domain_estados, range=range_cores), legend=alt.Legend(title="", orient="top", labelFontSize=12)),
+                tooltip=["Navio", "Estado", alt.Tooltip("Início:Q", format=".1f"), alt.Tooltip("Fim:Q", format=".1f"), "Duração:N"]
+            ).properties(height=altura_dinamica)
             regua_gantt = alt.Chart(pd.DataFrame({"x": [frame["time_h"]]})).mark_rule(color="red", strokeWidth=2).encode(x="x:Q")
             st.altair_chart(gantt_base + regua_gantt, width="stretch")
 
+        st.divider()
+        
+        # O novo formato que pediste (Taxa de Erro e Feed em tempo real)
+        st.markdown("**Auditoria de Comportamento da Política de RL**")
         hist_decisions, hist_events = [], []
         for t in timeline[: st.session_state.step_slider + 1]:
             for d in t.get("decisions", []):
                 if d.get("action_type") != "hold":
-                    hist_decisions.append({"Passo": t["step"], "Tempo": f"{t['time_h']:.1f}h", **d})
+                    hist_decisions.append({"Passo": t["step"], "time_h": t['time_h'], "Tempo": f"{t['time_h']:.1f}h", **d})
             for e in t.get("events", []):
-                hist_events.append({"Passo": t["step"], "Tempo": f"{t['time_h']:.1f}h", **e})
+                hist_events.append({"Passo": t["step"], "time_h": t['time_h'], "Tempo": f"{t['time_h']:.1f}h", **e})
 
         df_dec = pd.DataFrame(hist_decisions)
-        if not df_dec.empty:
-            df_dec = df_dec.iloc[::-1][["Passo", "Tempo", "agent_id", "action_type", "target_incident_id", "outcome"]]
         df_ev = pd.DataFrame(hist_events)
-        if not df_ev.empty:
-            df_ev = df_ev.iloc[::-1]
+
+        if not df_dec.empty:
+            scatter_dec = alt.Chart(df_dec).mark_circle(size=80, opacity=0.9).encode(
+                x=alt.X('time_h:Q', title='Tempo (h)'),
+                y=alt.Y('agent_id:N', title='Navio'),
+                color=alt.Color('outcome:N', title='Resultado', scale=alt.Scale(domain=['accepted', 'rejected', 'duplicate'], range=['#00dcdc', '#ff4b4b', '#ff8c00'])),
+                tooltip=['Passo', 'Tempo', 'agent_id', 'action_type', 'target_incident_id', 'outcome']
+            ).properties(height=200, title="Mapeamento de Decisões")
+            regua_dec = alt.Chart(pd.DataFrame({"x": [frame["time_h"]]})).mark_rule(color="red", strokeWidth=1).encode(x="x:Q")
+            st.altair_chart(scatter_dec + regua_dec, use_container_width=True)
 
         details_left, details_right = st.columns(2)
         with details_left:
-            st.markdown("**Últimas Decisões Relevantes** *(Ações de despacho)*")
-            st.dataframe(df_dec, hide_index=True, width="stretch", height=250)
+            st.markdown("🎯 **Eficácia de Despacho e Feed de Ações**")
+            if not df_dec.empty:
+                total_dec = len(df_dec)
+                err_count = len(df_dec[df_dec["outcome"].isin(["rejected", "duplicate"])])
+                err_rate = (err_count / total_dec) * 100
+                
+                c1, c2 = st.columns(2)
+                c1.metric("Taxa de Erro (RL)", f"{err_rate:.1f}%", f"{err_count} falhas", delta_color="inverse")
+                c2.metric("Total de Ações", total_dec)
+                
+                df_dec_show = df_dec.iloc[::-1].head(15)[["Passo", "Tempo", "agent_id", "outcome", "target_incident_id"]]
+                def color_outcome(val):
+                    if val == 'rejected': return 'color: #ff4b4b; font-weight: bold;'
+                    elif val == 'duplicate': return 'color: #ff8c00; font-weight: bold;'
+                    elif val == 'accepted': return 'color: #00dcdc;'
+                    return ''
+                st.dataframe(df_dec_show.style.map(color_outcome, subset=['outcome']), hide_index=True, width="stretch", height=210)
+            else:
+                st.info("O agente ainda não executou ações de despacho.")
+
         with details_right:
-            st.markdown("**Registo de Acontecimentos** *(Surgimento de Alarmes)*")
-            st.dataframe(df_ev, hide_index=True, width="stretch", height=250)
-
-        with st.expander("Metadados e métricas completas do Episódio"):
-            st.json({"generator": bundle["generator"], "scenario": scenario, "policy": policy, "metrics": metrics})
+            st.markdown("🚨 **Log do Ambiente (Últimos Eventos)**")
+            if not df_ev.empty:
+                df_ev_show = df_ev.iloc[::-1].head(15).drop(columns=['time_h'], errors='ignore')
+                st.dataframe(df_ev_show, hide_index=True, width="stretch", height=280)
+            else:
+                st.info("Sem eventos registados até ao momento.")
 
     # -----------------------------------------------------------------
-    # ABA 2: MODO FOCO (MF) — Só executa quando selecionada!
+    # ABA 2: MODO FOCO
     # -----------------------------------------------------------------
-    elif st.session_state.active_tab == "MF":
+    with tab_foco:
+        render_header_and_controls("mf")
+        
         f_col1, f_col2, f_col3, f_col4 = st.columns([2.5, 2.2, 2.2, 2.2])
-        with f_col1:
-            navio_escolhido = st.selectbox("🎯 Selecionar Navio para Auditoria", options=vessel_ids, key="tab_focus_vessel")
-        with f_col2:
-            st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-            isolar_foco = st.toggle("Ocultar restantes entidades", value=True, key="tog_iso_foco")
-        with f_col3:
-            st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-            linhas_foco = st.checkbox("Trajetória Projetada (Linha)", value=True, key="chk_lin_foco")
-        with f_col4:
-            st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-            rastos_foco = st.checkbox("Rasto Histórico (Tracejado)", value=True, key="chk_rst_foco")
+        with f_col1: navio_escolhido = st.selectbox("Selecionar Navio", options=vessel_ids, key="tab_focus_vessel", label_visibility="collapsed")
+        with f_col2: isolar_foco = st.toggle("Ocultar restantes", value=True, key="tog_iso_foco")
+        with f_col3: linhas_foco = st.checkbox("Trajetórias", value=True, key="chk_lin_foco")
+        with f_col4: rastos_foco = st.checkbox("Rastos", value=True, key="chk_rst_foco")
 
         dados_nav = next((v for v in frame["vessels"] if v["id"] == navio_escolhido), None)
         v_type_str = dados_nav.get("type", "unknown").capitalize() if dados_nav else "N/A"
         raw_st = dados_nav["status"] if dados_nav else "unknown"
         alvo_id = dados_nav.get("assigned_incident_id") if dados_nav else None
 
-        if raw_st == "transit":
-            estado_atual_str = f"Em trânsito ➔ Inc {alvo_id}"
-        elif raw_st == "on_site":
-            estado_atual_str = f"No local ➔ Inc {alvo_id}"
-        elif raw_st == "repairing":
-            estado_atual_str = f"A reparar ➔ Inc {alvo_id}"
-        elif raw_st == "returning":
-            estado_atual_str = "Regresso ao Porto"
-        elif raw_st == "idle":
-            estado_atual_str = "Inativo (Porto)"
-        else:
-            estado_atual_str = raw_st.capitalize()
+        if raw_st == "transit": estado_atual_str = f"Em trânsito ➔ Inc {alvo_id}"
+        elif raw_st == "on_site": estado_atual_str = f"No local ➔ Inc {alvo_id}"
+        elif raw_st == "repairing": estado_atual_str = f"A reparar ➔ Inc {alvo_id}"
+        elif raw_st == "returning": estado_atual_str = "Regresso ao Porto"
+        elif raw_st == "idle": estado_atual_str = "Inativo (Porto)"
+        else: estado_atual_str = raw_st.capitalize()
 
         dist_atual_km, dist_total_km = 0.0, 0.0
         incidentes_atendidos = set()
@@ -971,8 +829,7 @@ def render_interactive_workspace():
                 if prev_lat is not None and prev_lon is not None:
                     step_d = haversine_km(prev_lat, prev_lon, v_step["lat"], v_step["lon"])
                     dist_total_km += step_d
-                    if idx_t <= st.session_state.step_slider:
-                        dist_atual_km += step_d
+                    if idx_t <= st.session_state.step_slider: dist_atual_km += step_d
                 prev_lat, prev_lon = v_step["lat"], v_step["lon"]
                 if v_step["status"] in ["on_site", "repairing"] and v_step.get("assigned_incident_id") is not None:
                     incidentes_atendidos.add(v_step.get("assigned_incident_id"))
@@ -985,107 +842,44 @@ def render_interactive_workspace():
         horas_ativas = total_ep_h - horas_idle
         taxa_ocupacao = (horas_ativas / total_ep_h) * 100.0
 
-        decisoes_navio = []
-        for t in timeline:
-            for d in t.get("decisions", []):
-                if d.get("agent_id") == navio_escolhido and d.get("action_type") != "hold":
-                    decisoes_navio.append({
-                        "Passo": t["step"],
-                        "Tempo (h)": f"{t['time_h']:.1f}h",
-                        "Ação": d.get("action_type"),
-                        "Incidente Alvo": d.get("target_incident_id"),
-                        "Resultado": d.get("outcome"),
-                    })
-
         st.divider()
 
         k1, k2, k3, k4, k5, k6 = st.columns(6)
         k1.metric(f"Estado ({v_type_str})", estado_atual_str)
-        k2.metric("Distância Navegada", f"{dist_atual_km:.0f} km", f"Total Ep: {dist_total_km:.0f} km", delta_color="off")
+        k2.metric("Distância Navegada", f"{dist_atual_km:.0f} km", f"Total: {dist_total_km:.0f} km", delta_color="off")
         k3.metric("Taxa de Ocupação", f"{taxa_ocupacao:.1f}%", f"{horas_ativas:.1f}h ativas", delta_color="off")
         k4.metric("Tempo em Trânsito", f"{horas_transit:.1f} h", f"{(horas_transit / total_ep_h) * 100:.1f}% do ep.", delta_color="off")
-        k5.metric("Tempo no Local/Reparo", f"{horas_work:.1f} h", f"{len(incidentes_atendidos)} inc. visitados", delta_color="off")
-        k6.metric("Ordens de Despacho", len(decisoes_navio), f"Inativo: {horas_idle:.1f}h", delta_color="off")
+        k5.metric("Tempo no Local", f"{horas_work:.1f} h", f"{len(incidentes_atendidos)} inc. visitados", delta_color="off")
+        k6.metric("Horas Inativas", f"{horas_idle:.1f} h", delta_color="off")
 
         deck_foco, _, _, _, _ = build_fast_map_and_tables(
-            episode=episode,
-            timeline=timeline,
-            step_idx=st.session_state.step_slider,
-            navio_focado=navio_escolhido,
-            isolar_entidades=isolar_foco,
-            mostrar_linhas=linhas_foco,
-            mostrar_rastos=rastos_foco,
-            df_trips_cached=df_trips,
-            map_height=460,
+            episode=episode, timeline=timeline, step_idx=st.session_state.step_slider,
+            navio_focado=navio_escolhido, isolar_entidades=isolar_foco,
+            mostrar_linhas=linhas_foco, mostrar_rastos=rastos_foco, map_height=460
         )
 
         f_map_col, f_stat_col = st.columns([2, 1])
         with f_map_col:
             st.pydeck_chart(deck_foco, key="deck_mf")
-            render_legenda_mapa()
 
         with f_stat_col:
-            st.markdown(f"**Telemetria e Perfil de `{navio_escolhido}`**")
-            if dados_nav:
-                st.caption(
-                    f"📍 **Coordenadas Atuais:** `{dados_nav['lat']:.3f}, {dados_nav['lon']:.3f}` | "
-                    f"🎯 **Alvo Atual:** `{alvo_id if alvo_id is not None else 'Nenhum'}`"
-                )
-
+            st.markdown(f"**Telemetria de {navio_escolhido}**")
             if not df_gantt_nav.empty:
                 df_dist_est = df_gantt_nav.groupby("Estado", as_index=False)["Duracao_num"].sum()
-                domain_estados = ["idle", "transit", "on_site", "repairing", "returning"]
-                range_cores = ["#555555", "#0078ff", "#00dcdc", "#ff8c00", "#9b59b6"]
-                donut_nav = (
-                    alt.Chart(df_dist_est)
-                    .mark_arc(innerRadius=45)
-                    .encode(
-                        theta=alt.Theta("Duracao_num:Q", title="Horas"),
-                        color=alt.Color("Estado:N", scale=alt.Scale(domain=domain_estados, range=range_cores), legend=alt.Legend(orient="bottom", title="")),
-                        tooltip=[alt.Tooltip("Estado:N"), alt.Tooltip("Duracao_num:Q", title="Horas", format=".1f")],
-                    )
-                    .properties(height=220, title="Distribuição de Tempo por Estado (h)")
-                )
+                donut_nav = alt.Chart(df_dist_est).mark_arc(innerRadius=45).encode(
+                    theta=alt.Theta("Duracao_num:Q"),
+                    color=alt.Color("Estado:N", scale=alt.Scale(domain=["idle", "transit", "on_site", "repairing", "returning"], range=["#555555", "#0078ff", "#00dcdc", "#ff8c00", "#9b59b6"]), legend=alt.Legend(orient="bottom", title="")),
+                    tooltip=["Estado", "Duracao_num"]
+                ).properties(height=220)
                 st.altair_chart(donut_nav, width="stretch")
 
-            st.markdown("**Histórico de Despachos do Navio**")
-            df_dec_nav = pd.DataFrame(decisoes_navio)
-            if not df_dec_nav.empty:
-                st.dataframe(df_dec_nav.iloc[::-1], hide_index=True, width="stretch", height=190)
-            else:
-                st.info("Este navio não recebeu ordens de despacho no episódio.")
-
-        if not df_gantt_nav.empty:
-            st.markdown(f"**Linha Temporal de Estados (`{navio_escolhido}`)**")
-            domain_estados = ["idle", "transit", "on_site", "repairing", "returning"]
-            range_cores = ["#555555", "#0078ff", "#00dcdc", "#ff8c00", "#9b59b6"]
-            gantt_single = (
-                alt.Chart(df_gantt_nav)
-                .mark_bar(cornerRadius=4, size=30)
-                .encode(
-                    x=alt.X("Início:Q", title="Tempo (h)"),
-                    x2="Fim:Q",
-                    y=alt.Y("Navio:N", title="", axis=alt.Axis(grid=False, tickSize=0, domain=False)),
-                    color=alt.Color("Estado:N", scale=alt.Scale(domain=domain_estados, range=range_cores), legend=None),
-                    tooltip=["Estado:N", alt.Tooltip("Início:Q", format=".1f"), alt.Tooltip("Fim:Q", format=".1f"), "Duração:N"],
-                )
-                .properties(height=90)
-            )
-            regua_nav = alt.Chart(pd.DataFrame({"x": [frame["time_h"]]})).mark_rule(color="red", strokeWidth=2).encode(x="x:Q")
-            st.altair_chart(gantt_single + regua_nav, width="stretch")
-
     # -----------------------------------------------------------------
-    # ABA 3: COMPARAÇÃO DE EPISÓDIOS (CE) — Só executa quando selecionada!
+    # ABA 3: COMPARAÇÃO
     # -----------------------------------------------------------------
-    elif st.session_state.active_tab == "CE":
-        st.subheader("Auditoria de Performance: Frente-a-Frente", divider="gray")
-
-        compatible = {
-            k: c
-            for k, c in bundles.items()
-            if c["episode"]["scenario"]["id"] == scenario["id"]
-            and c["episode"]["scenario"]["world_seed"] == scenario["world_seed"]
-        }
+    with tab_comp:
+        render_header_and_controls("ce")
+        
+        compatible = {k: c for k, c in bundles.items() if c["episode"]["scenario"]["id"] == scenario["id"] and c["episode"]["scenario"]["world_seed"] == scenario["world_seed"]}
         comp_pool = compatible if len(compatible) >= 2 else bundles
         pool_keys = list(comp_pool.keys())
 
@@ -1093,29 +887,13 @@ def render_interactive_workspace():
         default_target_idx = 1 if (len(pool_keys) > 1 and default_base_idx == 0) else 0
 
         sel_col1, sel_col2 = st.columns(2)
-        with sel_col1:
-            base_id = st.selectbox(
-                "📌 Episódio Base (Referência)",
-                options=pool_keys,
-                index=default_base_idx,
-                format_func=lambda v: bundle_label(comp_pool[v]),
-                key="comp_base_sel",
-            )
-        with sel_col2:
-            target_id = st.selectbox(
-                "🚀 Episódio Alvo (Política em Auditoria)",
-                options=pool_keys,
-                index=default_target_idx,
-                format_func=lambda v: bundle_label(comp_pool[v]),
-                key="comp_target_sel",
-            )
+        with sel_col1: base_id = st.selectbox("Episódio Base", options=pool_keys, index=default_base_idx, format_func=lambda v: bundle_label(comp_pool[v]), key="comp_base_sel")
+        with sel_col2: target_id = st.selectbox("Episódio Alvo", options=pool_keys, index=default_target_idx, format_func=lambda v: bundle_label(comp_pool[v]), key="comp_target_sel")
 
         ep_base = comp_pool[base_id]["episode"]
         ep_target = comp_pool[target_id]["episode"]
         m_base = ep_base["metrics"]
         m_target = ep_target["metrics"]
-
-        st.markdown("**1. Variação de Performance (Alvo vs. Base)**")
 
         rew_base, rew_target = float(metric(m_base, "total_reward")), float(metric(m_target, "total_reward"))
         rate_base, rate_target = 100 * float(metric(m_base, "resolution_rate")), 100 * float(metric(m_target, "resolution_rate"))
@@ -1134,80 +912,29 @@ def render_interactive_workspace():
 
         st.divider()
 
-        st.markdown("**2. Reprodução Sincronizada Lado a Lado**")
-        cc1, cc2, _ = st.columns([2.4, 2.4, 5.2])
-        with cc1:
-            comp_linhas = st.checkbox("Trajetórias nos 2 Mapas (Linha)", value=True, key="chk_lin_comp")
-        with cc2:
-            comp_rastos = st.checkbox("Rastos nos 2 Mapas (Tracejado)", value=False, key="chk_rst_comp")
+        cc1, cc2, _ = st.columns([1.5, 1.5, 7])
+        with cc1: comp_linhas = st.checkbox("Trajetórias", value=True, key="chk_lin_comp")
+        with cc2: comp_rastos = st.checkbox("Rastos", value=False, key="chk_rst_comp")
 
         deck_base, df_nav_b, _, _, frame_base = build_fast_map_and_tables(
-            episode=ep_base,
-            timeline=ep_base["timeline"],
-            step_idx=st.session_state.step_slider,
-            mostrar_linhas=comp_linhas,
-            mostrar_rastos=comp_rastos,
-            map_height=430,
+            episode=ep_base, timeline=ep_base["timeline"], step_idx=st.session_state.step_slider,
+            mostrar_linhas=comp_linhas, mostrar_rastos=comp_rastos, map_height=430
         )
         deck_target, df_nav_t, _, _, frame_target = build_fast_map_and_tables(
-            episode=ep_target,
-            timeline=ep_target["timeline"],
-            step_idx=st.session_state.step_slider,
-            mostrar_linhas=comp_linhas,
-            mostrar_rastos=comp_rastos,
-            map_height=430,
+            episode=ep_target, timeline=ep_target["timeline"], step_idx=st.session_state.step_slider,
+            mostrar_linhas=comp_linhas, mostrar_rastos=comp_rastos, map_height=430
         )
 
         map_col_base, map_col_target = st.columns(2)
         with map_col_base:
-            st.markdown(f"##### 📌 Base: `{ep_base['policy']['label']}`")
-            open_b = sum(inc["status"] != "resolved" for inc in frame_base["incidents"])
-            res_b = sum(inc["status"] == "resolved" for inc in frame_base["incidents"])
-            st.caption(
-                f"⏱️ **Hora:** {frame_base['time_h']:.1f}h | 🚨 **Abertos:** {open_b} | "
-                f"✅ **Resolvidos:** {res_b} | 🏆 **Recompensa Acum.:** {frame_base['cumulative_reward']:.2f}"
-            )
+            st.markdown(f"**Base:** `{ep_base['policy']['label']}`")
             st.pydeck_chart(deck_base, key="deck_comp_base")
-            st.dataframe(df_nav_b[["Navio", "Estado"]], hide_index=True, width="stretch", height=175)
-
         with map_col_target:
-            st.markdown(f"##### 🚀 Alvo: `{ep_target['policy']['label']}`")
-            open_t = sum(inc["status"] != "resolved" for inc in frame_target["incidents"])
-            res_t = sum(inc["status"] == "resolved" for inc in frame_target["incidents"])
-            st.caption(
-                f"⏱️ **Hora:** {frame_target['time_h']:.1f}h | 🚨 **Abertos:** {open_t} | "
-                f"✅ **Resolvidos:** {res_t} | 🏆 **Recompensa Acum.:** {frame_target['cumulative_reward']:.2f}"
-            )
+            st.markdown(f"**Alvo:** `{ep_target['policy']['label']}`")
             st.pydeck_chart(deck_target, key="deck_comp_target")
-            st.dataframe(df_nav_t[["Navio", "Estado"]], hide_index=True, width="stretch", height=175)
-
-        render_legenda_mapa()
-        st.divider()
-
-        st.markdown("**3. Tabela Resumo de Todos os Episódios Compatíveis**")
-        selected_for_comparison = st.multiselect(
-            "Episódios com o mesmo cenário e seed",
-            options=list(comp_pool),
-            default=list(comp_pool),
-            format_func=lambda value: comp_pool[value]["episode"]["policy"]["label"],
-        )
-        comparison_rows = [
-            {
-                "Política": comp_pool[sel]["episode"]["policy"]["label"],
-                "Recompensa Total": metric(comp_pool[sel]["episode"]["metrics"], "total_reward", None),
-                "Taxa Resolução (%)": round(100 * float(metric(comp_pool[sel]["episode"]["metrics"], "resolution_rate", 0)), 1),
-                "1ª Resposta (h)": metric(comp_pool[sel]["episode"]["metrics"], "mean_first_response_time_h", None),
-                "Tempo Resolução (h)": metric(comp_pool[sel]["episode"]["metrics"], "mean_time_to_resolution_h", None),
-                "Severidade p/ Resolver": metric(comp_pool[sel]["episode"]["metrics"], "unresolved_severity", None),
-                "Despachos Duplicados": metric(comp_pool[sel]["episode"]["metrics"], "duplicate_dispatch_count", None),
-            }
-            for sel in selected_for_comparison
-        ]
-        st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, width="stretch")
 
     if st.session_state.playing:
         time.sleep(0.08)
         st.rerun(scope="fragment")
-
 
 render_interactive_workspace()
