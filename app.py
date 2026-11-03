@@ -189,9 +189,16 @@ def _prepare(_ep: dict, key: str) -> SimpleNamespace:
         erows += [{**e, **tag, **lab} for e in t.get("events", [])]
     idx = pd.RangeIndex(T, name="i")
 
-    # ---------- navios (formato longo) ----------
+   # ---------- navios (formato longo) ----------
     ves = ensure(pd.DataFrame(vrows), {"type": "unknown", "assigned_incident_id": np.nan})
     ves["type"] = ves["type"].fillna("unknown").astype(str)
+    
+    # Coerência de Estado: Forçar "repairing" para navios de reparação e "on_site" para patrulhas
+    is_patrol = ves["type"] == "patrol"
+    is_repair = ves["type"] == "repair"
+    ves.loc[is_repair & (ves["status"] == "on_site"), "status"] = "repairing"
+    ves.loc[is_patrol & (ves["status"] == "repairing"), "status"] = "on_site"
+
     ves["aid"] = pd.to_numeric(ves["assigned_incident_id"], errors="coerce")
     has = ves["aid"].notna()
     aid_s = ves["aid"].map(fmt_id)
@@ -456,7 +463,7 @@ def ch_incident_gantt(P, t):
     order = list(P.inc_sum["Rotulo"])
     base = alt.Chart(P.inc_blocks).mark_bar(cornerRadius=2, size=14).encode(
         x=alt.X("Início:Q", title="Tempo (h)"), x2="Fim:Q",
-        y=alt.Y("Incidente:N", sort=order, title=None, axis=alt.Axis(grid=False)),
+        y=alt.Y("Incidente:N", sort=order, title=None, axis=alt.Axis(grid=False, labelLimit=300)), # labelLimit evita corte de nomes
         color=alt.Color("Estado:N", scale=alt.Scale(domain=I_STATES, range=I_COLORS), legend=legend_top()),
         tooltip=["Incidente", "Estado", alt.Tooltip("Início:Q", format=".1f"), alt.Tooltip("Fim:Q", format=".1f"),
                  alt.Tooltip("Duracao_num:Q", title="Duração (h)", format=".1f")])
@@ -470,11 +477,11 @@ def ch_wait(P):
     order = list(P.wait_long.groupby("Rotulo")["Horas"].sum().sort_values(ascending=False).index)
     return alt.Chart(P.wait_long).mark_bar().encode(
         x=alt.X("Horas:Q", title="Horas desde que surgiu", stack=True),
-        y=alt.Y("Rotulo:N", sort=order, title=None),
+        y=alt.Y("Rotulo:N", sort=order[:10], title=None, axis=alt.Axis(labelLimit=300)), # Top 10 e labelLimit
         color=alt.Color("Fase:N", legend=legend_top(), scale=alt.Scale(
             domain=["Espera pela 1.ª resposta", "Tratamento / pendente"], range=["#ff2b2b", "#0078ff"])),
         tooltip=["Rotulo", "Fase", alt.Tooltip("Horas:Q", format=".1f")],
-    ).properties(height=max(140, len(order) * 22 + 50), title="Incidentes que mais tempo demoraram")
+    ).transform_filter(alt.FieldOneOfPredicate(field="Rotulo", oneOf=order[:10])).properties(height=max(140, len(order[:10]) * 26 + 50), title="Top 10: Incidentes que mais tempo demoraram")
 
 
 def ch_triage(P):
@@ -520,7 +527,7 @@ def ch_fleet_gantt(P, t, gantt=None, ids=None):
     ids = ids or P.vessel_ids
     base = alt.Chart(g).mark_bar(cornerRadius=4, size=24).encode(
         x=alt.X("Início:Q", title="Tempo (h)"), x2="Fim:Q",
-        y=alt.Y("Navio:N", sort=ids, title=None, axis=alt.Axis(grid=False, tickSize=0, domain=False)),
+        y=alt.Y("Navio:N", sort=ids, title=None, axis=alt.Axis(grid=False, tickSize=0, domain=False, labelLimit=300)),
         color=alt.Color("Estado:N", scale=alt.Scale(domain=V_STATES, range=V_COLORS), legend=legend_top()),
         tooltip=["Navio", "Estado", alt.Tooltip("Início:Q", format=".1f"), alt.Tooltip("Fim:Q", format=".1f"), "Duração:N"])
     return (base + rule(t, "Início")).properties(height=max(120, len(ids) * 46 + 60),
@@ -532,7 +539,7 @@ def ch_util(P):
         return None
     return alt.Chart(P.util).mark_bar().encode(
         x=alt.X("Duracao_num:Q", stack="normalize", title="% do episódio", axis=alt.Axis(format="%")),
-        y=alt.Y("Navio:N", sort=P.vessel_ids, title=None),
+        y=alt.Y("Navio:N", sort=P.vessel_ids, title=None, axis=alt.Axis(labelLimit=300)),
         color=alt.Color("Estado:N", scale=alt.Scale(domain=V_STATES, range=V_COLORS), legend=legend_top()),
         tooltip=["Navio", "Estado", alt.Tooltip("Duracao_num:Q", title="Horas", format=".1f")],
     ).properties(height=max(120, len(P.vessel_ids) * 40 + 60), title="Ocupação por navio (onde há cinzento há desperdício)")
@@ -540,21 +547,24 @@ def ch_util(P):
 
 def ch_dec_scatter(dec, t):
     base = alt.Chart(dec).mark_circle(size=80, opacity=0.9).encode(
-        x=alt.X("time_h:Q", title="Tempo (h)"), y=alt.Y("agent_id:N", title=None),
+        x=alt.X("time_h:Q", title="Tempo (h)"), 
+        y=alt.Y("agent_id:N", title=None, axis=alt.Axis(labelLimit=300)),
         color=alt.Color("outcome:N", title="Resultado", scale=alt.Scale(domain=OUTCOMES, range=OUTCOME_COLORS),
                         legend=legend_top()),
         tooltip=["Passo", "Tempo", "agent_id", "action_type", "target_incident_id", "outcome"])
-    return (base + rule(t, w=1)).properties(height=200, title="Mapa de decisões")
+    h = max(200, len(dec["agent_id"].unique()) * 30 + 50)
+    return (base + rule(t, w=1)).properties(height=h, title="Mapa de decisões")
 
 
 def ch_dec_bars(dec):
     d = dec.groupby(["agent_id", "outcome"]).size().reset_index(name="n")
+    h = max(200, len(dec["agent_id"].unique()) * 30 + 50)
     return alt.Chart(d).mark_bar().encode(
-        x=alt.X("n:Q", title="Nº de ações"), y=alt.Y("agent_id:N", title=None),
+        x=alt.X("n:Q", title="Nº de ações"), 
+        y=alt.Y("agent_id:N", title=None, axis=alt.Axis(labelLimit=300)),
         color=alt.Color("outcome:N", title="Resultado", scale=alt.Scale(domain=OUTCOMES, range=OUTCOME_COLORS),
                         legend=legend_top()),
-        tooltip=["agent_id", "outcome", "n"]).properties(height=200, title="Resultado das decisões por navio")
-
+        tooltip=["agent_id", "outcome", "n"]).properties(height=h, title="Resultado das decisões por navio")
 
 def style_outcome(df: pd.DataFrame):
     def f(v):
@@ -721,8 +731,6 @@ def view_diag(i: int):
         l, r = st.columns(2)
         l.altair_chart(ch_reward_cum(P, t), width="stretch")
         r.altair_chart(ch_reward_step(P, t), width="stretch")
-        st.altair_chart(ch_donut({"Idade do incidente": va, "Trânsito": vt_, "Risco adversarial": vd}),
-                        width="stretch")
 
     elif sec == DIAG_SECTIONS[3]:
         g = ch_fleet_gantt(P, t)
@@ -736,7 +744,7 @@ def view_diag(i: int):
         dec = P.dec[P.dec["i"] <= i]
         ev = P.ev[P.ev["i"] <= i]
         if not dec.empty:
-            l, r = st.columns([2, 1])
+            l, r = st.columns(2) # Dar espaçamento igual às colunas
             l.altair_chart(ch_dec_scatter(dec, t), width="stretch")
             r.altair_chart(ch_dec_bars(dec), width="stretch")
         l, r = st.columns(2)
@@ -806,13 +814,41 @@ def view_compare(i: int):
     pool = compat if len(compat) >= 2 else bundles
     keys = list(pool)
     b0 = keys.index(episode_id) if episode_id in keys else 0
+    
+    # 1. MAPAS LADO A LADO MOVIDOS PARA O TOPO
+    st.markdown("### 🗺️ Visualização Espacial Sincronizada")
+    mostrar_mapas = st.toggle("Ativar mapas de comparação lado a lado ", value=False, key="cmp_maps")
+    
+    if mostrar_mapas:
+        o1, o2, _ = st.columns([1.5, 1.5, 7])
+        lines = o1.checkbox("Trajetórias", True, key="chk_lin_c")
+        trails = o2.checkbox("Rastos", False, key="chk_rst_c")
+        
+    st.divider()
+
+    # 2. SELETORES E MÉTRICAS
     c1, c2 = st.columns(2)
-    base_id = c1.selectbox("Episódio base", keys, index=b0, format_func=lambda v: bundle_label(pool[v]), key="cmp_b")
-    tgt_id = c2.selectbox("Episódio alvo", keys, index=1 if (len(keys) > 1 and b0 == 0) else 0,
+    base_id = c1.selectbox(" Episódio Base", keys, index=b0, format_func=lambda v: bundle_label(pool[v]), key="cmp_b")
+    tgt_id = c2.selectbox(" Episódio Alvo", keys, index=1 if (len(keys) > 1 and b0 == 0) else 0,
                           format_func=lambda v: bundle_label(pool[v]), key="cmp_t")
+    
     eb, et = pool[base_id]["episode"], pool[tgt_id]["episode"]
     Pb, Pt = prep(eb), prep(et)
     mb, mt = eb["metrics"], et["metrics"]
+    
+    lb, lt = f"Base: {eb['policy']['label']}", f"Alvo: {et['policy']['label']}"
+    if lb[6:] == lt[6:]:
+        lb, lt = lb + " (base)", lt + " (alvo)"
+        
+    # Renderização Condicional dos Mapas no topo
+    if mostrar_mapas:
+        m1, m2 = st.columns(2)
+        m1.markdown(f"**{lb}**")
+        m1.pydeck_chart(build_deck(Pb, i, lines=lines, trails=trails, height=430), key="deck_cb")
+        m2.markdown(f"**{lt}**")
+        m2.pydeck_chart(build_deck(Pt, i, lines=lines, trails=trails, height=430), key="deck_ct")
+        st.divider()
+
     g = lambda m, n: float(metric(m, n))  # noqa: E731
     d = st.columns(6)
     d[0].metric("Recompensa total", f"{g(mt, 'total_reward'):.2f}", f"{g(mt, 'total_reward') - g(mb, 'total_reward'):+.2f}")
@@ -826,9 +862,9 @@ def view_compare(i: int):
     d[5].metric("Severidade por resolver", f"{g(mt, 'unresolved_severity'):.2f}",
                 f"{g(mt, 'unresolved_severity') - g(mb, 'unresolved_severity'):+.2f}", delta_color="inverse")
 
-    lb, lt = f"Base: {eb['policy']['label']}", f"Alvo: {et['policy']['label']}"
-    if lb[6:] == lt[6:]:
-        lb, lt = lb + " (base)", lt + " (alvo)"
+    st.divider()
+
+    # 3. CURVAS SOBREPOSTAS
     both = pd.concat([Pb.steps.assign(Política=lb), Pt.steps.assign(Política=lt)])
     dom, rng = [lb, lt], ["#8a8a8a", "#ff8c00"]
     t = float(Pb.steps["time_h"].iloc[min(i, Pb.T - 1)])
@@ -845,37 +881,36 @@ def view_compare(i: int):
     c3.altair_chart(overlay("perdida", "Oportunidades perdidas (ocioso + incidente sem alvo)", "step-after"),
                     width="stretch")
 
+    st.divider()
+    
+    # 4. ANÁLISE DE ESPERA POR INCIDENTE E RESULTADOS DE DECISÃO
+    st.markdown("**⏱️ Espera por Incidente vs Resultados das Decisões**")
     s1 = Pb.inc_sum[["Incidente", "Espera (h)", "Idade (h)"]].assign(Política=lb)
     s2 = Pt.inc_sum[["Incidente", "Espera (h)", "Idade (h)"]].assign(Política=lt)
+    
     inc_cmp = pd.concat([s1, s2])
     l, r = st.columns(2)
+    
     if not inc_cmp.empty:
         order = list(Pb.inc_sum["Incidente"])
         l.altair_chart(alt.Chart(inc_cmp).mark_bar().encode(
-            y=alt.Y("Incidente:N", sort=order, title=None), yOffset="Política:N",
+            y=alt.Y("Incidente:N", sort=order, title=None, axis=alt.Axis(labelLimit=300)), 
+            yOffset="Política:N",
             x=alt.X("Espera (h):Q", title="Espera pela 1.ª resposta (h)"),
             color=alt.Color("Política:N", scale=alt.Scale(domain=dom, range=rng), legend=legend_top()),
             tooltip=["Incidente", "Política", alt.Tooltip("Espera (h):Q", format=".1f"),
                      alt.Tooltip("Idade (h):Q", format=".1f")],
         ).properties(height=max(160, len(order) * 40 + 40), title="Espera por incidente (mesma seed)"), width="stretch")
+        
     dd = pd.concat([Pb.dec.assign(Política=lb), Pt.dec.assign(Política=lt)])
     if not dd.empty:
         cnt = dd.groupby(["Política", "outcome"]).size().reset_index(name="n")
         r.altair_chart(alt.Chart(cnt).mark_bar().encode(
-            x=alt.X("n:Q", title="Nº de ações"), y=alt.Y("Política:N", title=None, sort=dom),
+            x=alt.X("n:Q", title="Nº de ações"), 
+            y=alt.Y("Política:N", title=None, sort=dom, axis=alt.Axis(labelLimit=300)), 
             color=alt.Color("outcome:N", title="Resultado", scale=alt.Scale(domain=OUTCOMES, range=OUTCOME_COLORS),
                             legend=legend_top()), tooltip=["Política", "outcome", "n"],
-        ).properties(height=200, title="Resultado das decisões"), width="stretch")
-
-    if st.toggle("Mostrar mapas lado a lado (mais pesado)", value=False, key="cmp_maps"):
-        o1, o2, _ = st.columns([1.5, 1.5, 7])
-        lines = o1.checkbox("Trajetórias", True, key="chk_lin_c")
-        trails = o2.checkbox("Rastos", False, key="chk_rst_c")
-        m1, m2 = st.columns(2)
-        m1.markdown(f"**{lb}**")
-        m1.pydeck_chart(build_deck(Pb, i, lines=lines, trails=trails, height=430), key="deck_cb")
-        m2.markdown(f"**{lt}**")
-        m2.pydeck_chart(build_deck(Pt, i, lines=lines, trails=trails, height=430), key="deck_ct")
+        ).properties(height=250, title="Resultado das decisões"), width="stretch")
 
 
 # ---------------------------------- WORKSPACE (fragmento animado) ----------------------------------
