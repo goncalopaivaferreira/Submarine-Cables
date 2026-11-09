@@ -45,7 +45,7 @@ OUTCOMES = ["accepted", "rejected", "duplicate"]
 OUTCOME_COLORS = ["#00dcdc", "#ff4b4b", "#ff8c00"]
 GREY = [120, 120, 120, 60]
 VIEWS = ["🗺️ Mapa", "🩺 Diagnóstico", "🎯 Foco (navio)", "⚖️ Comparação"]
-DIAG_SECTIONS = ["Backlog e capacidade", "Porque ficaram por resolver", "Recompensa", "Frota", "Decisões"]
+DIAG_SECTIONS = ["Backlog e capacidade", "Resolução", "Recompensa", "Frota", "Decisões"]
 
 
 # --------------------------------------------------------------------------------------
@@ -690,8 +690,7 @@ def view_diag(i: int):
     if sec == DIAG_SECTIONS[0]:
         pct = 100 * float((P.steps["perdida"] > 0).mean())
         a, b, c = st.columns(3)
-        a.metric("% dos passos com oportunidade perdida", f"{pct:.1f}%",
-                 help="Passos em que havia navio inativo E incidente aberto sem nenhum navio atribuído.")
+        a.metric("% dos passos com oportunidade perdida", f"{pct:.1f}%")
         b.metric("Pico de incidentes sem alvo", int(P.steps["sem_alvo"].max()))
         c.metric("Taxa de hold", f"{(lambda h: h * 100 if h <= 1 else h)(float(metric(metrics, 'hold_action_rate'))):.1f}%")
         l, r = st.columns(2)
