@@ -36,7 +36,7 @@ SAMPLE_DIR = ROOT / "sample_bundles"
 # --------------------------------------------------------------------------------------
 # CONSTANTES VISUAIS
 # --------------------------------------------------------------------------------------
-GREY_UI = "#7a828e"  # cinzento "inativo/terminado": legível em tema escuro e claro (antes #555/#3a3a3a/#5a5a5a)
+GREY_UI = "#7a828e"
 
 V_STATES = ["idle", "transit", "on_site", "repairing", "returning"]
 V_COLORS = [GREY_UI, "#0078ff", "#00dcdc", "#ff8c00", "#9b59b6"]
@@ -48,14 +48,13 @@ I_LABEL = {
     "repairing": "Em reparação",
     "resolved": "Resolvido",
 }
-# domínios das séries "longas" (definidos num só sítio: o pré-cálculo e os gráficos têm de usar os mesmos textos)
+
 BACKLOG_LABELS = {"abertos": "Aberto (a aguardar)", "em_curso": "Em curso (no local / a reparar)",
                   "resolvidos": "Resolvido"}
 BACKLOG_COLORS = ["#ff2b2b", "#ff8c00", GREY_UI]
 CAP_LABELS = {"idle": "Navios inativos", "sem_alvo": "Incidentes abertos sem navio atribuído"}
 CAP_COLORS = ["#9aa0a6", "#ff2b2b"]
 
-# "duplicate_committed" já era tratado como erro mas não tinha cor -> aparecia sem cor/na cor por omissão
 OUTCOMES = ["accepted", "rejected", "duplicate", "duplicate_committed"]
 OUTCOME_COLORS = ["#00dcdc", "#ff4b4b", "#ff8c00", "#e056c1"]
 ERROR_OUTCOMES = {"rejected", "duplicate", "duplicate_committed"}
@@ -63,13 +62,12 @@ GREY = [120, 120, 120, 60]
 VIEWS = ["🗺️ Mapa", "🩺 Diagnóstico", "🎯 Foco (navio)", "⚖️ Comparação"]
 DIAG_SECTIONS = ["Backlog e capacidade", "Resolução", "Recompensa", "Frota", "Decisões"]
 
-# alturas partilhadas: pares de gráficos/painéis lado a lado usam SEMPRE a mesma altura
 MAP_H, FOCUS_MAP_H, CMP_MAP_H = 520, 480, 460
-TABLE_H = MAP_H - 90  # painel de tabelas à direita do mapa (descontando título + barra de abas)
+TABLE_H = MAP_H - 90  # painel de tabelas à direita do mapa 
 H_STD = 260           # gráficos temporais emparelhados
 H_PAIR = 320          # gráficos de barras/dispersão emparelhados
 PANEL_H = 430         # painéis (métricas + tabela) lado a lado
-MAX_INC_ROWS_INLINE = 30  # acima disto o Gantt de incidentes passa a ter scroll interno
+MAX_INC_ROWS_INLINE = 30  # Gantt de incidentes com scroll 
 
 CC = st.column_config
 NAV_CFG = {"Navio": CC.TextColumn("Navio", width="small"), "Estado": CC.TextColumn("Estado", width="large"),
@@ -170,7 +168,6 @@ def run_blocks(df: pd.DataFrame, ent: str, col: str, t_end: float) -> pd.DataFra
     b["dur"] = b["fim"] - b["ini"]
     return b.reset_index(drop=True)
 
-
 # --------------------------------------------------------------------------------------
 # INFRAESTRUTURA ESTÁTICA
 # --------------------------------------------------------------------------------------
@@ -201,9 +198,9 @@ def build_infra(map_data: dict, faded: bool) -> tuple[dict, pd.DataFrame]:
 
 
 # --------------------------------------------------------------------------------------
-# CARREGAMENTO COM CACHE (sem cópias: cache_resource devolve sempre o mesmo objeto)
+# CARREGAMENTO COM CACHE 
 # --------------------------------------------------------------------------------------
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False) #devolve sempre o mesmo objeto
 def _load_sample(path: str, mtime: float) -> dict:
     return load_bundle(Path(path))
 
@@ -238,10 +235,16 @@ def _prepare(_ep: dict, key: str) -> SimpleNamespace:
     idx = pd.RangeIndex(T, name="i")
 
     # ---------- navios (formato longo) ----------
-    ves = ensure(pd.DataFrame(vrows), {"type": "unknown", "assigned_incident_id": np.nan})
+    ves = ensure(pd.DataFrame(vrows), {
+        "type": "unknown",
+        "assigned_incident_id": np.nan,
+        "lat": np.nan,
+        "lon": np.nan,
+    })
     ves["type"] = ves["type"].fillna("unknown").astype(str)
+    ves["lat"] = pd.to_numeric(ves["lat"], errors="coerce")
+    ves["lon"] = pd.to_numeric(ves["lon"], errors="coerce")
 
-    # Coerência de Estado: forçar "repairing" para navios de reparação e "on_site" para patrulhas
     is_patrol = ves["type"] == "patrol"
     is_repair = ves["type"] == "repair"
     ves.loc[is_repair & (ves["status"] == "on_site"), "status"] = "repairing"
@@ -254,23 +257,45 @@ def _prepare(_ep: dict, key: str) -> SimpleNamespace:
     ves["Tipo"] = ves["type"].str.capitalize()
     ves["Estado"] = np.select(
         [(s == "transit") & has, (s == "on_site") & has, (s == "repairing") & has, s == "returning", s == "idle"],
-        [("Em trânsito para o Incidente " + aid_s).to_numpy(), ("No local do Incidente " + aid_s).to_numpy(),
-         ("A reparar o Incidente " + aid_s).to_numpy(), "A regressar ao Porto", "Inativo (a aguardar ordens)"],
+        [
+            ("Em trânsito para o Incidente " + aid_s).to_numpy(),
+            ("No local do Incidente " + aid_s).to_numpy(),
+            ("A reparar o Incidente " + aid_s).to_numpy(),
+            "A regressar ao Porto",
+            "Inativo (a aguardar ordens)",
+        ],
         default=s.astype(str).str.capitalize().to_numpy(),
     )
-    ves["Coords"] = ves["lat"].map("{:.3f}".format) + ", " + ves["lon"].map("{:.3f}".format)
+    ves["Coords"] = np.where(
+        ves["lat"].notna() & ves["lon"].notna(),
+        ves["lat"].map("{:.3f}".format) + ", " + ves["lon"].map("{:.3f}".format),
+        "",
+    )
     ves["tooltip_text"] = "ID: " + ves["id"].astype(str) + "\nNavio (" + ves["Tipo"] + ")\nEstado: " + ves["Estado"]
     vt = {"patrol": [0, 120, 255, 255], "repair": [255, 140, 0, 255]}
     add_rgba(ves, [vt.get(t, [150, 150, 150, 255]) for t in ves["type"]])
 
     # ---------- incidentes (formato longo) ----------
-    inc = ensure(pd.DataFrame(irows), {"id": np.nan, "status": "", "lat": np.nan, "lon": np.nan,
-                                         "severity": np.nan, "i": 0, "time_h": 0.0})
+    inc = ensure(pd.DataFrame(irows), {
+        "id": np.nan,
+        "status": "",
+        "lat": np.nan,
+        "lon": np.nan,
+        "severity": np.nan,
+        "i": 0,
+        "time_h": 0.0,
+    })
+    inc["lat"] = pd.to_numeric(inc["lat"], errors="coerce")
+    inc["lon"] = pd.to_numeric(inc["lon"], errors="coerce")
     inc["severity"] = pd.to_numeric(inc["severity"], errors="coerce")
     inc["Estado"] = inc["status"].map(lambda x: I_LABEL.get(x, str(x).capitalize()))
     inc["Incidente"] = "incident_" + inc["id"].astype(str)
     inc["Severidade"] = inc["severity"]
-    inc["Coords"] = inc["lat"].map("{:.3f}".format) + ", " + inc["lon"].map("{:.3f}".format)
+    inc["Coords"] = np.where(
+        inc["lat"].notna() & inc["lon"].notna(),
+        inc["lat"].map("{:.3f}".format) + ", " + inc["lon"].map("{:.3f}".format),
+        "",
+    )
     sev_txt = inc["severity"].map(lambda x: "" if pd.isna(x) else f"\nSeveridade: {x:.2f}")
     inc["tooltip_text"] = "ID: " + inc["Incidente"] + "\nIncidente\nEstado: " + inc["Estado"] + sev_txt
     ic = {"open": [255, 40, 40, 255], "on_site": [0, 220, 220, 255], "repairing": [0, 220, 220, 255]}
@@ -345,7 +370,7 @@ def _prepare(_ep: dict, key: str) -> SimpleNamespace:
     cumkm = vs.pivot_table(index="i", columns="id", values="cum_km", aggfunc="last").reindex(idx).ffill().fillna(0)
     visited = (ves[ves["status"].isin(["on_site", "repairing"]) & has].groupby("id")["aid"].nunique())
 
-    # ---------- rasto tracejado (pré-calculado, filtrado por k <= passo) ----------
+    # ---------- rasto tracejado ----------
     drows_s = []
     for vid, gv in vs.groupby("id"):
         patrol = gv["type"].iloc[0] == "patrol"
@@ -375,7 +400,7 @@ def prep(ep: dict) -> SimpleNamespace:
 
 
 # --------------------------------------------------------------------------------------
-# MAPA (apenas slicing; tudo o resto já está pré-calculado)
+# MAPA 
 # --------------------------------------------------------------------------------------
 def build_deck(P, i, focus=None, isolate=False, lines=True, trails=False, height=MAP_H):
     i = min(i, P.T - 1)
@@ -387,7 +412,6 @@ def build_deck(P, i, focus=None, isolate=False, lines=True, trails=False, height
 
     if not (focus and isolate) and P.geo_n["features"]:
         geo = P.geo_f if focus else P.geo_n
-        # Porto/Landing Point são o círculo MAIOR da pilha (min 10 px) -> um navio parado no porto (7 px) já não o tapa
         layers.append(pdk.Layer(
             "GeoJsonLayer", id="infra", data=geo, pickable=True, stroked=True, filled=True,
             point_radius_min_pixels=10, point_radius_max_pixels=16, get_point_radius="properties.radius",
@@ -430,14 +454,11 @@ def build_deck(P, i, focus=None, isolate=False, lines=True, trails=False, height
                                         get_color="[r, g, b, a]", get_width=3, pickable=False))
 
     cols = ["lon", "lat", "r", "g", "b", "a", "tooltip_text"]
-    # Incidente (12–20 px) > navio (7–13 px): quando o navio chega ao local, o incidente fica visível como "halo".
-    # (antes ambos tinham 8 px e o navio escondia por completo o incidente)
     if not inc_m.empty:
         layers.append(pdk.Layer("ScatterplotLayer", id="inc", data=inc_m[cols], get_position="[lon, lat]",
                                 get_fill_color="[r, g, b, a]", get_radius=62000, radius_min_pixels=12,
                                 radius_max_pixels=20, pickable=True))
     if not ves_m.empty:
-        # contorno com a mesma transparência do preenchimento: navios "apagados" (modo foco) deixam de ter anel branco forte
         layers.append(pdk.Layer("ScatterplotLayer", id="ves", data=ves_m[cols], get_position="[lon, lat]",
                                 get_fill_color="[r, g, b, a]", get_line_color="[255, 255, 255, a]", stroked=True,
                                 line_width_min_pixels=1.5, get_radius=55000, radius_min_pixels=7,
@@ -456,14 +477,16 @@ def build_deck(P, i, focus=None, isolate=False, lines=True, trails=False, height
 
 def tables_at(P, i):
     i = min(i, P.T - 1)
-    ves = P.ves_by_i.get(i, P.empty_ves)
-    inc = P.inc_by_i.get(i, P.empty_inc)
-    return (ves[["id", "Estado", "Tipo", "Coords"]].rename(columns={"id": "Navio"}),
-            inc[["Incidente", "Estado", "Severidade", "Coords"]])
+    ves = ensure(P.ves_by_i.get(i, P.empty_ves).copy(), {"id": "", "Estado": "", "Tipo": "", "Coords": ""})
+    inc = ensure(P.inc_by_i.get(i, P.empty_inc).copy(), {"Incidente": "", "Estado": "", "Severidade": np.nan, "Coords": ""})
+    return (
+        ves[["id", "Estado", "Tipo", "Coords"]].rename(columns={"id": "Navio"}),
+        inc[["Incidente", "Estado", "Severidade", "Coords"]],
+    )
 
 
 # --------------------------------------------------------------------------------------
-# LEGENDAS HTML (flex-wrap: nunca truncam nem alteram a altura da área de desenho dos gráficos)
+# LEGENDAS HTML
 # --------------------------------------------------------------------------------------
 def sw(label: str, color: str, kind: str = "square") -> str:
     """Uma entrada de legenda. kind: square | dot | line | dash."""
@@ -484,7 +507,7 @@ def grp(label: str) -> str:
 def legend_row(items: list[str], center: bool = False) -> None:
     just = "center" if center else "flex-start"
     st.markdown(
-        f"<div style='display:flex;flex-wrap:wrap;align-items:center;justify-content:{just};gap:6px 18px;"
+        f"<div style='display:flex;flex-wrap:wrap;align-items:center;justify-content:{just};gap:6px 18px;" #flex-wrap não trunca nem altera a altura da área de desenho dos gráficos
         f"font-size:.86em;color:#a0a0a0;padding:2px 0 8px'>{''.join(items)}</div>", unsafe_allow_html=True)
 
 
@@ -511,7 +534,6 @@ def ttl(main: str, sub: str | None = None) -> alt.TitleParams:
 
 
 def _legend(orient: str) -> alt.Legend:
-    # labelLimit=0 -> sem truncagem (o Vega corta rótulos de legenda a 160 px por omissão)
     return alt.Legend(orient=orient, title=None, labelLimit=0, labelFontSize=11, symbolSize=90,
                       columnPadding=14, rowPadding=4, padding=2)
 
@@ -706,7 +728,6 @@ def ch_dec_bars(dec, vessel_ids=None):
     )
 
 
-
 def style_outcome(df: pd.DataFrame):
     def f(v):
         s = str(v) if v is not None else ""
@@ -778,7 +799,7 @@ P = prep(episode)
 max_frame = P.T - 1
 
 st.sidebar.divider()
-st.sidebar.caption("**📋 DETALHES DO EPISÓDIO ATIVO**")
+st.sidebar.caption("** DETALHES DO EPISÓDIO **")
 st.sidebar.caption(f"**Cenário:** {scenario['id']}")
 st.sidebar.caption(f"**Política:** {policy['label']} ({policy['kind']})")
 st.sidebar.caption(f"**Duração:** {P.t_end:.1f}h | **Passos:** {P.T}")
@@ -805,7 +826,7 @@ def click_reset():
 
 def on_slider():
     ss.step = ss.ui_step
-    ss.playing = False  # arrastar o slider pausa a reprodução
+    ss.playing = False
 
 
 # ---------------------------------- VISTAS ----------------------------------
@@ -846,7 +867,7 @@ def view_diag(i: int):
         a.metric("% dos passos com oportunidade perdida", f"{pct:.1f}%")
         b.metric("Pico de incidentes sem alvo", int(P.steps["sem_alvo"].max()))
         c.metric("Taxa de hold", f"{(lambda h: h * 100 if h <= 1 else h)(float(metric(metrics, 'hold_action_rate'))):.1f}%")
-        legend_backlog_capacity()  # uma só legenda por cima dos dois gráficos -> áreas de desenho alinhadas
+        legend_backlog_capacity()
         l, r = st.columns(2)
         l.altair_chart(ch_backlog(P, t), width="stretch")
         r.altair_chart(ch_capacity(P, t), width="stretch")
@@ -905,14 +926,13 @@ def view_diag(i: int):
             l, r = st.columns(2)
             l.altair_chart(ch_dec_scatter(dec, t, P.t_end, vessel_ids=P.vessel_ids), width="stretch")
             r.altair_chart(ch_dec_bars(dec, vessel_ids=P.vessel_ids), width="stretch")
-        # dois painéis em caixas com a MESMA altura fixa (antes: 250 + métricas vs. 300 -> bases desalinhadas)
         l, r = st.columns(2)
         with l, st.container(border=True, height=PANEL_H):
-            st.markdown("🎯 **Eficácia de despacho e feed de ações**")
+            st.markdown(" **Eficácia de despacho e feed de ações**")
             st.caption("Até ao instante atual")
             decision_panel(dec, "dec_diag", height=PANEL_H - 190)
         with r, st.container(border=True, height=PANEL_H):
-            st.markdown("🚨 **Log do ambiente**")
+            st.markdown(" **Log do ambiente**")
             st.caption("Últimos eventos até ao instante atual")
             if ev.empty:
                 st.info("Sem eventos registados até ao momento.")
@@ -975,7 +995,6 @@ def view_compare(i: int):
     keys = list(pool)
     b0 = keys.index(episode_id) if episode_id in keys else 0
 
-    # 1) seletores primeiro (os mapas e as métricas dependem deles)
     c1, c2 = st.columns(2)
     base_id = c1.selectbox("Episódio base", keys, index=b0, format_func=lambda v: bundle_label(pool[v]), key="cmp_b")
     tgt_id = c2.selectbox("Episódio alvo", keys, index=1 if (len(keys) > 1 and b0 == 0) else 0,
@@ -988,7 +1007,6 @@ def view_compare(i: int):
         lb, lt = lb + " (base)", lt + " (alvo)"
     dom, rng = [lb, lt], ["#9aa0a6", "#ff8c00"]
 
-    # 2) mapas lado a lado (opcionais), logo por baixo dos seletores e por cima das métricas
     o0, o1, o2, _ = st.columns([2.6, 1.4, 1.4, 5], vertical_alignment="center")
     mostrar_mapas = o0.toggle("Mapas lado a lado (sincronizados)", value=False, key="cmp_maps")
     if mostrar_mapas:
@@ -1002,8 +1020,7 @@ def view_compare(i: int):
         legend()
     st.divider()
 
-    # 3) métricas
-    g = lambda m, n: float(metric(m, n))  # noqa: E731
+    g = lambda m, n: float(metric(m, n)) 
     d = st.columns(6)
     d[0].metric("Recompensa total", f"{g(mt, 'total_reward'):.2f}", f"{g(mt, 'total_reward') - g(mb, 'total_reward'):+.2f}")
     d[1].metric("Taxa de resolução", f"{100 * g(mt, 'resolution_rate'):.1f}%",
@@ -1017,7 +1034,6 @@ def view_compare(i: int):
                 f"{g(mt, 'unresolved_severity') - g(mb, 'unresolved_severity'):+.2f}", delta_color="inverse")
     st.divider()
 
-    # 4) curvas sobrepostas: UMA legenda HTML partilhada (antes: 3 legendas Altair a quebrar em colunas estreitas)
     both = pd.concat([Pb.steps.assign(Política=lb), Pt.steps.assign(Política=lt)])
     t = float(Pb.steps["time_h"].iloc[min(i, Pb.T - 1)])
     t_max = float(max(Pb.t_end, Pt.t_end))
@@ -1038,8 +1054,7 @@ def view_compare(i: int):
                     width="stretch")
     st.divider()
 
-    # 5) espera por incidente vs. resultados das decisões — mesma altura, sem legendas Altair (legenda HTML única)
-    st.markdown("**⏱️ Espera por incidente vs. resultados das decisões**")
+    st.markdown("Espera por incidente vs. resultados das decisões")
     s1 = Pb.inc_sum[["Incidente", "Espera (h)", "Idade (h)"]].assign(Política=lb)
     s2 = Pt.inc_sum[["Incidente", "Espera (h)", "Idade (h)"]].assign(Política=lt)
     inc_cmp = pd.concat([s1, s2])
@@ -1048,8 +1063,6 @@ def view_compare(i: int):
                + [sw(o, c) for o, c in zip(OUTCOMES, OUTCOME_COLORS)])
     l, r = st.columns(2)
     if not inc_cmp.empty:
-        # Top 10 pelo pior tempo de espera entre as duas políticas (antes: TODOS os incidentes -> gráfico altíssimo
-        # ao lado de um gráfico baixo)
         order = list(inc_cmp.groupby("Incidente")["Espera (h)"].max().sort_values(ascending=False).index[:10])
         l.altair_chart(alt.Chart(inc_cmp[inc_cmp["Incidente"].isin(order)]).mark_bar().encode(
             y=alt.Y("Incidente:N", sort=order, title=None, axis=alt.Axis(labelLimit=0)),
@@ -1074,7 +1087,6 @@ def view_compare(i: int):
 # ---------------------------------- WORKSPACE (fragmento animado) ----------------------------------
 @st.fragment
 def workspace():
-    # 1) avançar o passo ANTES de instanciar o slider (elimina a race condition)
     if ss.playing:
         nxt = ss.step + int(ss.get("speed", 1))
         if nxt >= max_frame:
@@ -1086,7 +1098,6 @@ def workspace():
     frame = P.timeline[i]
 
     st.subheader(f"Cenário: {scenario['id']} — Política: {policy['label']}", divider="gray")
-    # as duas filas de KPIs tinham os mesmos rótulos ("Resolvidos"…) com valores diferentes -> legendadas
     st.caption("Resultado final do episódio")
     k = st.columns(6)
     k[0].metric("Resolvidos", f"{int(metric(metrics, 'n_resolved'))}/{int(metric(metrics, 'n_incidents'))}")
@@ -1096,7 +1107,6 @@ def workspace():
     k[4].metric("Despachos duplicados", int(metric(metrics, "duplicate_dispatch_count")))
     k[5].metric("Severidade por resolver", f"{float(metric(metrics, 'unresolved_severity')):.2f}")
 
-    # vertical_alignment="center" substitui o "padding-top:8px" e alinha botões, seletor, texto e slider pela mesma linha
     c1, c2, c3, c4, c5 = st.columns([1.4, 1.1, 1.0, 2.3, 5.0], vertical_alignment="center")
     c1.button("⏸ Pausa" if ss.playing else "▶ Reproduzir", on_click=click_play, width="stretch", key="btn_play")
     c2.button("⏮ Reset", on_click=click_reset, width="stretch", key="btn_reset")
@@ -1109,27 +1119,12 @@ def workspace():
     st.divider()
     {VIEWS[0]: view_map, VIEWS[1]: view_diag, VIEWS[2]: view_focus, VIEWS[3]: view_compare}[view](i)
 
-    # 2) loop de reprodução: só re-executa este fragmento
     if ss.playing:
         time.sleep(0.03)
         try:
             st.rerun(scope="fragment")
-        except StreamlitAPIException:  # execução completa do script (ex.: mudança na sidebar a meio do play)
+        except StreamlitAPIException:
             st.rerun()
 
 
 workspace()
-
-# --------------------------------------------------------------------------------------
-# NOTAS DE LAYOUT (o que mudou face à v3 — só apresentação, nenhuma lógica de dados)
-#  * Legendas Altair: labelLimit=0 (o Vega corta a 160 px); legendas partilhadas em HTML nos pares/trios de gráficos.
-#  * ch_capacity: cores trocadas (sem domínio explícito o Vega ordena alfabeticamente) e legenda cortada.
-#  * Gantt de incidentes: sem teto de 900 px (as barras de 14 px sobrepunham-se a partir de ~65 incidentes);
-#    scroll interno acima de 30 incidentes.
-#  * Eixos de contagem com tickMinStep=1 (antes apareciam 0.5, 1.5, 2.5 …).
-#  * Mapa de decisões: eixo X fixo [0, t_end] (já não "salta"); "duplicate_committed" ganhou cor.
-#  * st.metric: rótulos/deltas a quebrar linha; "Estado" do modo Foco passou para uma faixa de largura total.
-#  * Pares lado a lado com a mesma altura (H_STD / H_PAIR / PANEL_H); controlos com vertical_alignment="center".
-#  * Mapa: incidente (12–20 px) maior que navio (7–13 px) e Porto 10–16 px (antes o navio tapava-os); anel do navio
-#    esmaecido no modo foco; legenda completa e com quebra de linha; tabelas com column_config.
-# --------------------------------------------------------------------------------------
