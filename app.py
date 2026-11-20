@@ -799,7 +799,7 @@ P = prep(episode)
 max_frame = P.T - 1
 
 st.sidebar.divider()
-st.sidebar.caption("** DETALHES DO EPISÓDIO **")
+st.sidebar.caption("**DETALHES DO EPISÓDIO**")
 st.sidebar.caption(f"**Cenário:** {scenario['id']}")
 st.sidebar.caption(f"**Política:** {policy['label']} ({policy['kind']})")
 st.sidebar.caption(f"**Duração:** {P.t_end:.1f}h | **Passos:** {P.T}")
